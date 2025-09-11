@@ -139,16 +139,72 @@ else:
 # Coop Map
 # ------------------------------------------
 st.subheader("🌐 Coop Map")
+
+# Keep full history in session_state
+if "all_rows" not in st.session_state:
+    st.session_state.all_rows = []
+
+# Add latest tick rows to history
+if "last_rows" in st.session_state:
+    st.session_state.all_rows.extend(st.session_state.last_rows)
+
 G = nx.DiGraph()
 
-for h in engine.history:
-    G.add_node(h["agent"])
-    if h.get("action") in ["peck", "spread_rumor", "ally", "sanction"]:
-        G.add_edge(h["agent"], h.get("target", "unknown"))
+# Color map for actions
+action_colors = {
+    "peck": "red",
+    "spread_rumor": "purple",
+    "ally": "green",
+    "sanction": "orange",
+}
 
-plt.figure(figsize=(5,5))
-nx.draw(G, with_labels=True, node_color="skyblue", node_size=1500, font_size=10, arrows=True)
-st.pyplot(plt)
+# Build network with colored edges
+edge_colors = []
+for h in st.session_state.all_rows:
+    G.add_node(h["agent"])
+    if h.get("action") in action_colors:
+        target = h.get("target")
+        if target:
+            G.add_edge(h["agent"], target, label=h["action"])
+            edge_colors.append(action_colors[h["action"]])
+
+if len(G.nodes) > 0:
+    plt.figure(figsize=(6, 6))
+    pos = nx.spring_layout(G, seed=42)
+
+    nx.draw(
+        G,
+        pos,
+        with_labels=True,
+        node_color="skyblue",
+        node_size=1800,
+        font_size=10,
+        font_weight="bold",
+        arrows=True,
+        edge_color=edge_colors if edge_colors else "gray",
+        width=2,
+        arrowsize=20,
+    )
+
+    labels = nx.get_edge_attributes(G, "label")
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=labels, font_size=8)
+    st.pyplot(plt)
+else:
+    st.info("No interactions yet. Play a few ticks to see the coop network.")
+
+# ------------------------------------------
+# Sidebar Legend
+# ------------------------------------------
+st.sidebar.markdown("### Coop Map Legend")
+st.sidebar.markdown(
+    """
+    - <span style="color:red;">**Red**</span>: Peck (fight)
+    - <span style="color:purple;">**Purple**</span>: Spread Rumor
+    - <span style="color:green;">**Green**</span>: Ally (coalition)
+    - <span style="color:orange;">**Orange**</span>: Sanction
+    """,
+    unsafe_allow_html=True,
+)
 
 # ------------------------------------------
 # Memory Snapshots
