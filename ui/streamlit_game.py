@@ -222,5 +222,37 @@ for agent in engine.agents:
 # Coop Metrics
 # ------------------------------------------
 st.subheader("📊 Coop Metrics")
-metrics = engine.compute_metrics()
-st.json(metrics)
+
+if "engine" in st.session_state:
+    engine = st.session_state.engine
+    metrics = engine.compute_metrics()
+
+    # Show key indicators
+    cols = st.columns(5)
+    cols[0].metric("Hierarchy steepness", metrics["hierarchy_steepness"])
+    cols[1].metric("Policy inertia", metrics["policy_inertia"])
+    cols[2].metric("Coalitions", metrics["coalitions"])
+    cols[3].metric("Rumors", metrics["rumors"])
+    cols[4].metric("Sanctions", metrics["sanctions"])
+
+    # Plot trends over time
+    if len(engine.metrics_history) > 1:
+        import pandas as pd
+        import matplotlib.pyplot as plt
+
+        df = pd.DataFrame(engine.metrics_history)
+
+        st.markdown("### 📈 Trends Over Time")
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        for col in ["hierarchy_steepness", "policy_inertia", "coalitions", "rumors", "sanctions"]:
+            ax.plot(df["tick"], df[col], label=col)
+
+        ax.set_xlabel("Tick")
+        ax.set_ylabel("Value")
+        ax.legend()
+        ax.grid(True, linestyle="--", alpha=0.6)
+        st.pyplot(fig)
+else:
+    st.info("Run the simulation to see metrics.")
+
