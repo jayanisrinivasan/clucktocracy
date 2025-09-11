@@ -2,45 +2,38 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from simulation.engine import CoopEngine
 from chickens.agent import ChickenAgent
+from gpt.inference import generate_ai_actions
 
 # ----------------------------
 # Page Setup
 # ----------------------------
 st.set_page_config(page_title="Clucktocracy — Pixel Coop Democracy", layout="wide")
 
-# Inject Custom CSS
+# Inject Custom CSS (retro gamer style)
 st.markdown(
     """
     <style>
-    /* Global dark theme */
     body, .stApp {
         background-color: #121212;
         color: #E0E0E0;
         font-family: 'Press Start 2P', monospace;
     }
-
-    /* Title styling */
     h1 {
         font-size: 32px !important;
         text-align: center;
         color: #FF4B4B;
         text-shadow: 2px 2px #000;
     }
-
     h2, h3 {
         color: #FFD700 !important;
         text-shadow: 1px 1px #000;
     }
-
-    /* Sidebar */
     section[data-testid="stSidebar"] {
         background-color: #1E1E1E;
     }
     section[data-testid="stSidebar"] * {
         color: #E0E0E0 !important;
     }
-
-    /* Buttons */
     button {
         background: linear-gradient(90deg, #FF4B4B, #FF9900);
         border: none;
@@ -54,8 +47,6 @@ st.markdown(
         background: linear-gradient(90deg, #FF9900, #FF4B4B);
         transform: scale(1.05);
     }
-
-    /* Rumor Feed */
     .rumor-feed {
         background: #1E1E1E;
         padding: 12px;
@@ -64,8 +55,6 @@ st.markdown(
         font-size: 12px;
         line-height: 1.4em;
     }
-
-    /* Memories */
     .memory-block {
         background: #202020;
         padding: 8px 12px;
@@ -73,8 +62,6 @@ st.markdown(
         border-left: 3px solid #FF4B4B;
         border-radius: 4px;
     }
-
-    /* Metrics */
     .metric-box {
         background: #181818;
         padding: 10px;
@@ -82,7 +69,6 @@ st.markdown(
         border-radius: 6px;
         border: 1px solid #333;
     }
-
     </style>
     """,
     unsafe_allow_html=True
@@ -110,10 +96,15 @@ if "engine" not in st.session_state:
 engine: CoopEngine = st.session_state.engine
 
 # ----------------------------
-# Sidebar
+# Sidebar Controls
 # ----------------------------
 st.sidebar.header("Controls")
 backend = st.sidebar.selectbox("Model backend", ["mock", "ollama", "transformers"])
+model_choice = st.sidebar.selectbox("Model", ["openai/gpt-oss-20b", "openai/gpt-oss-120b"])
+reasoning = st.sidebar.radio("Reasoning Effort", ["low", "medium", "high"])
+api_base = st.sidebar.text_input("API Base", "http://localhost:11434/v1")
+api_key = st.sidebar.text_input("API Key", type="password")
+
 st.sidebar.markdown(f"**Backend selected:** {backend}")
 if st.sidebar.button("End Session"):
     st.session_state.ended = True
@@ -127,11 +118,8 @@ def render_pixel_map(agents):
     ax.set_ylim(0, 10)
 
     colors = ["#FF4B4B", "#4B7BFF", "#3CB043", "#FFD700", "#FF69B4"]
-    positions = {}
-
     for i, a in enumerate(agents):
         x, y = (i % 5) * 2 + 1, (i // 5) * 2 + 1
-        positions[a.name] = (x, y)
         ax.scatter(x, y, c=colors[i % len(colors)], s=800, marker="o", edgecolors="white", linewidths=1.5)
         ax.text(x, y + 0.5, a.name, ha="center", color="white", fontsize=8, fontweight="bold")
 
@@ -160,9 +148,25 @@ if st.button("➡️ Next Tick"):
         "target": target,
         "message": message
     })
-    rows = engine.step()
+
+    # --- AI Actions (via GPT) ---
+    ai_actions = generate_ai_actions(
+        agents=engine.agents,
+        backend=backend,
+        model=model_choice,
+        reasoning_effort=reasoning,
+        api_base=api_base,
+        api_key=api_key,
+        tick=st.session_state.tick
+    )
+
+    all_actions = st.session_state.human_actions + ai_actions
+
+    # Run one tick of the engine
+    rows = engine.step(actions=all_actions)
     st.session_state.rumors.extend(rows)
     st.session_state.tick += 1
+    st.session_state.human_actions = []  # reset
 
 # ----------------------------
 # Layout
