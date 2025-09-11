@@ -1,1 +1,11 @@
-
+tick,agent,action,target,message,result
+0,hen_1,initiate_fight,hen_2,"Hen_1 pecks Hen_2!",win
+0,hen_2,react_to_rumor,,,"Rumor heard: Hen_3 stole seeds!"
+1,hen_3,spread_rumor,hen_4,"I saw hen_4 steal seeds!",rumor_spread
+1,hen_4,wander,,,
+2,hen_1,propose,policy_term_limits,"Proposes leadership rotation every 5 ticks",proposal_submitted
+2,hen_2,vote,policy_term_limits,"Votes YES on term limits",vote_cast
+2,hen_3,vote,policy_term_limits,"Votes NO on term limits",vote_cast
+3,hen_4,ally,hen_3,"Let's form a coalition",alliance_formed
+3,hen_2,audit,rumor_hen4,"Investigates rumor about hen_4",rumor_false
+4,hen_1,sanction,hen_3,"Spreading false rumors!",sanction_applied
