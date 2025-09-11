@@ -1,18 +1,12 @@
 # simulation/engine.py
 
-import os
-import csv
-import json
-import random
-from typing import List, Dict, Any
-
+import os, csv, json
+from typing import List, Dict, Any, Optional
 from chickens.agent import ChickenAgent
 
-
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-LOG_PATH = os.path.join(DATA_DIR, "log.csv")
-MEMORY_PATH = os.path.join(DATA_DIR, "memory_snapshots.json")
-
+DATA_DIR   = os.path.join(os.path.dirname(__file__), "..", "data")
+LOG_PATH   = os.path.join(DATA_DIR, "log.csv")
+MEM_PATH   = os.path.join(DATA_DIR, "memory_snapshots.json")
 
 class CoopEngine:
     def __init__(self, agents: List[ChickenAgent], max_ticks: int = 50, log_interval: int = 5):
@@ -20,133 +14,107 @@ class CoopEngine:
         self.tick = 0
         self.max_ticks = max_ticks
         self.log_interval = log_interval
-
-        # Ensure data dir exists
         os.makedirs(DATA_DIR, exist_ok=True)
-
-        # Reset logs
+        # (Re)initialize log on construct
         with open(LOG_PATH, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["tick", "agent", "action", "target", "message", "result"])
+            csv.writer(f).writerow(["tick","agent","action","target","message","result"])
 
-    # -----------------------------
-    # Core loop
-    # -----------------------------
+    # ---------- step-wise loop (for the game) ----------
+    def step(self, backend: str, human_override: Optional[Dict[str, Any]] = None) -> None:
+        """Advance exactly one tick. If human_override is provided, it's used as hen_human action."""
+        t = self.tick
+
+        # build context (shared)
+        base_ctx = {"tick": t, "backend": backend}
+
+        # 1) collect actions
+        actions: List[Dict[str, Any]] = []
+        for agent in self.agents:
+            if human_override and agent.name == "hen_human":
+                act = human_override
+                # ensure fields
+                act.setdefault("action", "IDLE")
+                act.setdefault("target", None)
+                act.setdefault("message", "")
+            else:
+                act = agent.decide_action(context=base_ctx)
+            actions.append((agent, act))
+
+        # 2) apply actions + log
+        for agent, act in actions:
+            result = self.apply_action(agent, act)
+            self.log_action(agent, act, result)
+
+        # 3) snapshots
+        if t % self.log_interval == 0:
+            self.save_memory_snapshots()
+
+        self.tick += 1
+
+    # ---------- classic loop (unchanged use) ----------
     def run(self, backend: str = "mock", verbose: bool = True):
-        for t in range(self.max_ticks):
-            self.tick = t
+        for _ in range(self.max_ticks):
+            self.step(backend=backend, human_override=None)
             if verbose:
-                print(f"\n=== Tick {t} ===")
+                print(f"Tick {self.tick-1} complete.")
+        print(f"Log: {LOG_PATH}\nMem: {MEM_PATH}")
 
-            for agent in self.agents:
-                # Build context
-                context = {"tick": t, "backend": backend}
-
-                action = agent.decide_action(context=context)
-
-                result = self.apply_action(agent, action)
-                self.log_action(agent, action, result)
-
-                if verbose:
-                    print(f"{agent.name}: {action} -> {result}")
-
-            # Save memory snapshots periodically
-            if t % self.log_interval == 0:
-                self.save_memory_snapshots()
-
-    # -----------------------------
-    # Apply action effects
-    # -----------------------------
+    # ---------- effects ----------
     def apply_action(self, agent: ChickenAgent, action: Dict[str, Any]) -> str:
-        """Apply action consequences (simplified version)."""
-        act = action.get("action", "idle")
+        act = (action.get("action") or "").lower()
         target_name = action.get("target")
-        msg = action.get("message", "")
+        msg = action.get("message","")
 
-        if act == "initiate_fight":
-            if target_name:
-                # Simple dominance check
-                target = self._find_agent(target_name)
-                if target and agent.peck_rank < target.peck_rank:
-                    outcome = "win"
-                    agent.mood = "proud"
-                    target.mood = "hurt"
-                else:
-                    outcome = "lose"
-                    agent.mood = "hurt"
-                return outcome
-            return "no_target"
+        if act in ("peck","initiate_fight"):
+            if not target_name: return "no_target"
+            target = self._find(target_name)
+            if not target: return "no_target"
+            # simple dominance check (lower rank wins)
+            if agent.peck_rank < target.peck_rank:
+                agent.mood, target.mood = "proud","hurt"
+                return "win"
+            agent.mood = "hurt"
+            return "lose"
 
-        elif act == "spread_rumor":
+        if act == "gossip" or act == "spread_rumor":
             for other in self.agents:
                 if other != agent:
                     other.react_to_rumor(msg, source=agent.name, tick=self.tick)
             return "rumor_spread"
 
-        elif act == "ally":
+        if act == "ally":
             return "alliance_formed"
 
-        elif act == "propose":
+        if act == "propose":
             return "proposal_submitted"
 
-        elif act == "vote":
+        if act == "vote":
             return "vote_cast"
 
-        elif act == "audit":
-            return "rumor_checked"
+        if act == "audit":
+            # toy: randomly label true/false
+            return "rumor_true" if hash(msg+str(self.tick))%3==0 else "rumor_false"
 
-        elif act == "sanction":
+        if act == "sanction":
             return "sanction_applied"
 
-        else:
-            return "noop"
+        return "noop"
 
-    # -----------------------------
-    # Logging
-    # -----------------------------
+    # ---------- I/O ----------
     def log_action(self, agent: ChickenAgent, action: Dict[str, Any], result: str):
         with open(LOG_PATH, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                self.tick,
-                agent.name,
-                action.get("action"),
-                action.get("target"),
-                action.get("message"),
-                result,
+            csv.writer(f).writerow([
+                self.tick, agent.name, action.get("action"),
+                action.get("target"), action.get("message"), result
             ])
 
     def save_memory_snapshots(self):
-        data = {}
-        for agent in self.agents:
-            data[agent.name] = agent.memory
-        with open(MEMORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        out = {a.name: a.memory for a in self.agents}
+        with open(MEM_PATH, "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2)
 
-    # -----------------------------
-    # Helpers
-    # -----------------------------
-    def _find_agent(self, name: str) -> ChickenAgent:
+    # ---------- helpers ----------
+    def _find(self, name: str) -> Optional[ChickenAgent]:
         for a in self.agents:
-            if a.name == name:
-                return a
+            if a.name == name: return a
         return None
-
-
-# -----------------------------
-# Quick test
-# -----------------------------
-if __name__ == "__main__":
-    # Create some chickens
-    agents = [
-        ChickenAgent("hen_1", "aggressive", "leader"),
-        ChickenAgent("hen_2", "scheming", "follower"),
-        ChickenAgent("hen_3", "submissive", "gossip"),
-        ChickenAgent("hen_4", "zen", "follower"),
-    ]
-
-    coop = CoopEngine(agents, max_ticks=10, log_interval=2)
-    coop.run(backend="mock", verbose=True)
-
-    print(f"\nLog written to {LOG_PATH}")
-    print(f"Memory snapshots saved to {MEMORY_PATH}")
