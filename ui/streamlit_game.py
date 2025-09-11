@@ -140,7 +140,10 @@ human_override = {"action": act, "target": target.strip() or None, "message": ms
 go = st.button("Next Tick", use_container_width=True, type="primary")
 if go:
     engine.step(backend=st.session_state.backend, human_override=human_override)
+    if hasattr(engine, "save_state"):
+        engine.save_state()  # ensure logs/mem flush
     st.session_state.tick = engine.tick
+    st.rerun()  # refresh rumor feed + UI instantly
 
 # ---------- Load log/mem ----------
 def load_log_rows():
@@ -232,4 +235,4 @@ if st.button("End Session", use_container_width=True):
     st.session_state.final_score = score
     st.session_state.final_title = title
     st.session_state.ended = True
-    st.experimental_rerun()
+    st.rerun()  # ✅ use stable rerun
