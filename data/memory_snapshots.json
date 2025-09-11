@@ -1,1 +1,19 @@
+{
+  "hen_1": [
+    {"tick": 0, "event": "Pecked Hen_2 and won", "source": null, "credibility": 1.0},
+    {"tick": 2, "event": "Proposed policy: term limits", "source": "self", "credibility": 1.0}
+  ],
+  "hen_2": [
+    {"tick": 0, "event": "Got pecked by Hen_1", "source": "hen_1", "credibility": 1.0},
+    {"tick": 2, "event": "Voted YES on term limits", "source": "self", "credibility": 1.0}
+  ],
+  "hen_3": [
+    {"tick": 1, "event": "Spread rumor about Hen_4 stealing seeds", "source": "self", "credibility": 0.5},
+    {"tick": 3, "event": "Allied with Hen_4", "source": "hen_4", "credibility": 0.9}
+  ],
+  "hen_4": [
+    {"tick": 1, "event": "Heard rumor accusing me of theft", "source": "hen_3", "credibility": 0.3},
+    {"tick": 3, "event": "Formed coalition with Hen_3", "source": "hen_3", "credibility": 0.9}
+  ]
+}
 
