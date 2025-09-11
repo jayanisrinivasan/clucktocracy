@@ -1,7 +1,7 @@
 # ui/streamlit_game.py
 """
 CLUCKTOCRACY — Coop Simulation HUD
-Dark gamer HUD with scenarios, GPT-OSS integration, and backend flexibility.
+Simplified rollback version (no broken backend args).
 """
 
 import sys, os
@@ -96,30 +96,6 @@ scenario_name = st.sidebar.selectbox(
     [s["name"] for s in SCENARIOS] + ["Custom"]
 )
 
-st.sidebar.header("Controls")
-st.sidebar.selectbox(
-    "Model backend",
-    ["mock","ollama","transformers","remote-api"],
-    key="backend"
-)
-
-if st.session_state.get("backend") == "transformers":
-    st.sidebar.text_input("HF model id", key="model", value="openai/gpt-oss-20b")
-
-if st.session_state.get("backend") == "ollama":
-    st.sidebar.text_input("Ollama tag", key="model", value="gpt-oss:20b")
-
-if st.session_state.get("backend") == "remote-api":
-    st.sidebar.text_input("Remote API base URL", key="api_base", value="http://localhost:8000/v1")
-    st.sidebar.text_input("Remote API key", key="api_key", value="test", type="password")
-    st.sidebar.text_input("Remote model name", key="model", value="gpt-oss-20b")
-
-st.sidebar.selectbox(
-    "Reasoning effort",
-    ["low","medium","high"],
-    key="reasoning_effort"
-)
-
 st.sidebar.markdown("### Constitution")
 c1 = st.sidebar.checkbox("Term limits", value=False)
 c2 = st.sidebar.checkbox("Rumor audits", value=True)
@@ -147,22 +123,11 @@ if "engine" not in st.session_state:
     st.session_state.engine = CoopEngine(agents, max_ticks=240, log_interval=4)
 
 # ✅ Safe defaults
-st.session_state.setdefault("backend", "mock")
-st.session_state.setdefault("model", "openai/gpt-oss-20b")
-st.session_state.setdefault("reasoning_effort", "medium")
-st.session_state.setdefault("api_base", "http://localhost:8000/v1")
-st.session_state.setdefault("api_key", "test")
 st.session_state.setdefault("tick", 0)
 st.session_state.setdefault("ended", False)
 
 engine: CoopEngine = st.session_state.engine
 st.session_state.constitution.update({"term_limits": c1, "rumor_audits": c2, "equal_talk_time": c3})
-
-# ---------- Backend banner ----------
-st.markdown(
-    f"<div class='banner'>Scenario: <b>{scenario_name}</b> | Backend: <b>{st.session_state.backend}</b> | Model: <b>{st.session_state.get('model','-')}</b> | Reasoning: <b>{st.session_state.reasoning_effort}</b></div>",
-    unsafe_allow_html=True
-)
 
 # ---------- End screen ----------
 if st.session_state.ended:
@@ -195,13 +160,9 @@ human_override = {"action": act, "target": target.strip() or None, "message": ms
 # ---------- Advance tick ----------
 go = st.button("Next Tick", use_container_width=True, type="primary")
 if go:
-    engine.step(
-        backend=st.session_state.backend,
+    engine.step(  # ✅ simple again
         human_override=human_override,
         constitution=st.session_state.constitution,
-        reasoning_effort=st.session_state.reasoning_effort,
-        api_base=st.session_state.api_base,
-        api_key=st.session_state.api_key,
     )
     engine.save_state()
     st.session_state.tick = engine.tick
@@ -217,12 +178,11 @@ if not rows:
     st.info("Click Next Tick to start the coop.")
 else:
     for r in rows[-60:]:
-        tag = f"[{st.session_state.backend.upper()}]"
         label = "[ATTACK]" if r["action"] in ("PECK","initiate_fight") else \
                 "[RUMOR]" if r["action"] in ("GOSSIP","spread_rumor") else \
                 "[POLICY]" if r["action"] in ("PROPOSE","VOTE") else \
                 "[SANCTION]" if r["action"]=="SANCTION" else "[MOVE]"
-        st.markdown(f"- {tag} {label} [t={r['tick']}] {r['agent']} → {r['action']} :: {r['message']}")
+        st.markdown(f"- [t={r['tick']}] {r['agent']} → {r['action']} :: {r['message']} {label}")
 
 # ---------- Coop Map + Metrics ----------
 st.subheader("Coop Map & Metrics")
