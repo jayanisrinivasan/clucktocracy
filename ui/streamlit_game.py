@@ -145,13 +145,15 @@ if "engine" not in st.session_state:
         }
 
     st.session_state.engine = CoopEngine(agents, max_ticks=240, log_interval=4)
-    st.session_state.backend = "mock"
-    st.session_state.model = "openai/gpt-oss-20b"
-    st.session_state.reasoning_effort = "medium"
-    st.session_state.api_base = "http://localhost:8000/v1"
-    st.session_state.api_key = "test"
-    st.session_state.tick = 0
-    st.session_state.ended = False
+
+# ✅ Safe defaults
+st.session_state.setdefault("backend", "mock")
+st.session_state.setdefault("model", "openai/gpt-oss-20b")
+st.session_state.setdefault("reasoning_effort", "medium")
+st.session_state.setdefault("api_base", "http://localhost:8000/v1")
+st.session_state.setdefault("api_key", "test")
+st.session_state.setdefault("tick", 0)
+st.session_state.setdefault("ended", False)
 
 engine: CoopEngine = st.session_state.engine
 st.session_state.constitution.update({"term_limits": c1, "rumor_audits": c2, "equal_talk_time": c3})
