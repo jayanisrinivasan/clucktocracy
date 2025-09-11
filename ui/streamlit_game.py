@@ -1,6 +1,10 @@
 # ui/streamlit_game.py
 
-import os, csv, json, random
+import sys, os
+# --- ensure project root is on sys.path ---
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import csv, json, random
 import streamlit as st
 import matplotlib.pyplot as plt
 import networkx as nx
