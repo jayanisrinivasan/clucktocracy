@@ -1,76 +1,113 @@
-import random
+# simulation/engine.py
+
+import os, csv, json
+from datetime import datetime
 from chickens.agent import ChickenAgent
 
+LOG_PATH = os.path.join("logs", "coop_log.csv")
+MEM_PATH = os.path.join("logs", "coop_mem.json")
+
+
 class CoopEngine:
-    def __init__(self, agents):
+    def __init__(self, agents, max_ticks=200, log_interval=5):
         self.agents = agents
         self.history = []
-        self.metrics_history = []
+        self.tick = 0
+        self.max_ticks = max_ticks
+        self.log_interval = log_interval
 
-    def step(self, actions=None, tick=0):
+        os.makedirs("logs", exist_ok=True)
+        with open(LOG_PATH, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["tick", "agent", "action", "target", "message"])
+            writer.writeheader()
+        with open(MEM_PATH, "w", encoding="utf-8") as f:
+            json.dump({}, f)
+
+    def step(self, backend="mock", human_override=None, constitution=None,
+             reasoning_effort="medium", api_base=None, api_key=None):
         """
-        Step simulation forward one tick.
-        Human actions passed in `actions`, NPCs act randomly.
+        Advance one tick of the coop simulation.
+        Integrates GPT-OSS / Ollama / Transformers / Remote API backends.
         """
-        rows = []
+        actions = []
 
-        # Human + NPC actions
-        if actions:
-            rows.extend(actions)
+        # Human override
+        if human_override and human_override.get("action") != "IDLE":
+            actions.append({
+                "tick": self.tick,
+                "agent": "hen_human",
+                "action": human_override.get("action"),
+                "target": human_override.get("target"),
+                "message": human_override.get("message", "")
+            })
 
+        # NPC actions
         for agent in self.agents:
-            if agent.role == "npc":
-                act = agent.act(tick)
-                rows.append(act)
+            if agent.role != "player":
+                act = agent.act(self.tick)
+                act["tick"] = self.tick
+                actions.append(act)
 
-        # Apply effects + memories
-        for act in rows:
-            actor = self._get_agent(act["agent"])
-            target = act.get("target")
-            if act["action"] == "peck" and target:
-                actor.remember(f"Pecked {target}")
-                self._get_agent(target).remember(f"Got pecked by {actor.name}")
-            elif act["action"] == "spread_rumor" and target:
-                actor.remember(f"Spread rumor about {target}")
-                self._get_agent(target).remember(f"Heard rumor accusing me")
-            elif act["action"] == "ally" and target:
-                actor.remember(f"Allied with {target}")
-                self._get_agent(target).remember(f"Allied with {actor.name}")
-            elif act["action"] == "propose":
-                actor.remember(f"Proposed: {act['message']}")
-            elif act["action"] == "vote":
-                actor.remember(f"Voted: {act['message']}")
-            elif act["action"] == "sanction" and target:
-                actor.remember(f"Sanctioned {target}")
-                self._get_agent(target).remember(f"Got sanctioned by {actor.name}")
+        # GPT inference (if not mock)
+        if backend != "mock":
+            try:
+                from gpt.inference import generate_ai_actions
+                ai_responses = generate_ai_actions(
+                    actions,
+                    backend=backend,
+                    model="openai/gpt-oss-20b",  # default
+                    reasoning_effort=reasoning_effort,
+                    api_base=api_base,
+                    api_key=api_key
+                )
+                if ai_responses:
+                    actions.extend(ai_responses)
+            except Exception as e:
+                print(f"[WARN] GPT backend failed: {e}")
 
-        self.history.extend(rows)
-        metrics = self.compute_metrics()
-        self.metrics_history.append({"tick": tick, **metrics})
+        # Save to history
+        self.history.extend(actions)
+        self.tick += 1
+        self._write_logs(actions)
+        self._update_memories(actions)
 
-        return rows
+        return actions
 
-    def _get_agent(self, name):
-        for agent in self.agents:
-            if agent.name == name:
-                return agent
-        return None
+    def _write_logs(self, actions):
+        """Persist actions to CSV log"""
+        with open(LOG_PATH, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["tick", "agent", "action", "target", "message"])
+            for act in actions:
+                writer.writerow(act)
 
-    def compute_metrics(self):
-        """
-        Very simple placeholder metrics.
-        """
-        pecks = sum(1 for h in self.history if h["action"] == "peck")
-        proposals = sum(1 for h in self.history if h["action"] == "propose")
-        votes = sum(1 for h in self.history if h["action"] == "vote")
-        alliances = sum(1 for h in self.history if h["action"] == "ally")
-        rumors = sum(1 for h in self.history if h["action"] == "spread_rumor")
-        sanctions = sum(1 for h in self.history if h["action"] == "sanction")
+    def _update_memories(self, actions):
+        """Append memories per agent"""
+        mems = {}
+        if os.path.exists(MEM_PATH):
+            with open(MEM_PATH, encoding="utf-8") as f:
+                try:
+                    mems = json.load(f)
+                except json.JSONDecodeError:
+                    mems = {}
 
-        return {
-            "hierarchy_steepness": round(pecks / (len(self.history) + 1), 2),
-            "policy_inertia": proposals - votes,
-            "coalitions": alliances,
-            "rumors": rumors,
-            "sanctions": sanctions,
+        for act in actions:
+            agent = act["agent"]
+            if agent not in mems:
+                mems[agent] = []
+            mems[agent].append({
+                "tick": act["tick"],
+                "event": f"{agent} did {act['action']} targeting {act.get('target','')} :: {act.get('message','')}"
+            })
+
+        with open(MEM_PATH, "w", encoding="utf-8") as f:
+            json.dump(mems, f, indent=2)
+
+    def save_state(self):
+        """Save engine state for persistence"""
+        state = {
+            "tick": self.tick,
+            "history": self.history,
+            "agents": [a.to_dict() for a in self.agents],
         }
+        with open("logs/state.json", "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
