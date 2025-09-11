@@ -1,200 +1,209 @@
-# ui/streamlit_game.py
-import sys, os, csv, json, random
-from collections import defaultdict
 import streamlit as st
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
+import matplotlib.pyplot as plt
+from simulation.engine import CoopEngine
 from chickens.agent import ChickenAgent
-from chickens.scenarios import SCENARIOS
-from chickens.personalities import CHICKEN_ARCHETYPES
-from simulation.engine import CoopEngine, LOG_PATH, MEM_PATH
-from ui.pixel_map import render_pixel_map
-from gpt.inference import run_inference
 
-# ---------- Page & Theme ----------
-st.set_page_config(page_title="Clucktocracy", layout="wide")
+# ----------------------------
+# Page Setup
+# ----------------------------
+st.set_page_config(page_title="Clucktocracy — Pixel Coop Democracy", layout="wide")
 
-st.markdown("""
-<style>
-html, body, [class*="css"] {
-    background-color: #0e0e10;
-    color: #e0e0e0;
-    font-family: 'Orbitron', sans-serif;
-}
-[data-testid="stSidebar"] { background-color: #1a1a1d; }
-
-.stButton>button {
-    background-color: #ff005d; color: white; font-weight: bold;
-    border-radius: 6px; border: none; padding: 8px 16px; transition: 0.2s;
-}
-.stButton>button:hover { background-color: #ff3369; transform: scale(1.05); }
-
-[data-testid="stMetricValue"] { color: #00ffae; font-size: 22px; }
-
-.card {
-    background: #16161a; border: 2px solid #00ffae; padding: 12px; border-radius: 8px;
-}
-
-h1, h2, h3 { color: #ff005d; }
-
-.game-over {
-    background-color: #000000cc; color: #ff005d; text-align: center;
-    padding: 40px; border: 4px solid #00ffae; border-radius: 12px;
-    font-size: 26px; font-weight: bold; text-shadow: 0 0 10px #ff005d, 0 0 20px #ff005d;
-}
-
-.banner {
-    background: linear-gradient(90deg, #111, #1f0033);
-    border: 1px solid #35124f; padding: 10px 14px; border-radius: 8px; margin-bottom: 8px;
-    font-size: 13px; color: #c9c9c9;
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.title("CLUCKTOCRACY — Coop Simulation HUD")
-
-# ---------- Helpers ----------
-def load_log_rows():
-    if not os.path.exists(LOG_PATH): return []
-    with open(LOG_PATH, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-def load_mem():
-    if not os.path.exists(MEM_PATH): return {}
-    with open(MEM_PATH, encoding="utf-8") as f:
-        return json.load(f)
-
-# ---------- Sidebar ----------
-st.sidebar.header("Scenario")
-scenario_name = st.sidebar.selectbox("Scenario", [s["name"] for s in SCENARIOS] + ["Custom"])
-
-st.sidebar.header("Backend")
-backend = st.sidebar.selectbox("Model backend", ["mock","ollama","transformers","remote-api"], key="backend")
-model = st.sidebar.text_input("Model name", value="openai/gpt-oss-20b", key="model")
-reasoning_effort = st.sidebar.selectbox("Reasoning effort", ["low","medium","high"], key="reasoning_effort")
-api_base = st.sidebar.text_input("API base", value="http://localhost:8000/v1", key="api_base")
-api_key = st.sidebar.text_input("API key", value="test", type="password", key="api_key")
-
-st.sidebar.header("Constitution")
-c1 = st.sidebar.checkbox("Term limits", value=False)
-c2 = st.sidebar.checkbox("Rumor audits", value=True)
-c3 = st.sidebar.checkbox("Equal talk-time", value=False)
-
-# ---------- Session Init ----------
-if "engine" not in st.session_state:
-    agents = [ChickenAgent("hen_human", "curious", "reformer")]
-    if scenario_name != "Custom":
-        scenario = next(s for s in SCENARIOS if s["name"]==scenario_name)
-        for arche in scenario["chickens"]:
-            agents.append(ChickenAgent(**arche))
-        st.session_state.constitution = dict(scenario["constitution"])
-    else:
-        chosen = random.sample(CHICKEN_ARCHETYPES, 3)
-        for arche in chosen:
-            agents.append(ChickenAgent(**arche))
-        st.session_state.constitution = {"term_limits": c1,"rumor_audits": c2,"equal_talk_time": c3}
-    st.session_state.engine = CoopEngine(agents, max_ticks=240, log_interval=4)
-
-st.session_state.setdefault("tick",0)
-st.session_state.setdefault("ended",False)
-engine: CoopEngine = st.session_state.engine
-st.session_state.constitution.update({"term_limits": c1,"rumor_audits": c2,"equal_talk_time": c3})
-
-# ---------- HUD Banner ----------
+# Inject Custom CSS
 st.markdown(
-    f"<div class='banner'>Scenario: <b>{scenario_name}</b> | Backend: <b>{backend}</b> | Model: <b>{model}</b> | Reasoning: <b>{reasoning_effort}</b></div>",
+    """
+    <style>
+    /* Global dark theme */
+    body, .stApp {
+        background-color: #121212;
+        color: #E0E0E0;
+        font-family: 'Press Start 2P', monospace;
+    }
+
+    /* Title styling */
+    h1 {
+        font-size: 32px !important;
+        text-align: center;
+        color: #FF4B4B;
+        text-shadow: 2px 2px #000;
+    }
+
+    h2, h3 {
+        color: #FFD700 !important;
+        text-shadow: 1px 1px #000;
+    }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #1E1E1E;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #E0E0E0 !important;
+    }
+
+    /* Buttons */
+    button {
+        background: linear-gradient(90deg, #FF4B4B, #FF9900);
+        border: none;
+        border-radius: 6px;
+        color: white !important;
+        font-weight: bold;
+        padding: 8px 16px;
+        transition: 0.2s;
+    }
+    button:hover {
+        background: linear-gradient(90deg, #FF9900, #FF4B4B);
+        transform: scale(1.05);
+    }
+
+    /* Rumor Feed */
+    .rumor-feed {
+        background: #1E1E1E;
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid #333;
+        font-size: 12px;
+        line-height: 1.4em;
+    }
+
+    /* Memories */
+    .memory-block {
+        background: #202020;
+        padding: 8px 12px;
+        margin-bottom: 6px;
+        border-left: 3px solid #FF4B4B;
+        border-radius: 4px;
+    }
+
+    /* Metrics */
+    .metric-box {
+        background: #181818;
+        padding: 10px;
+        margin: 5px 0;
+        border-radius: 6px;
+        border: 1px solid #333;
+    }
+
+    </style>
+    """,
     unsafe_allow_html=True
 )
 
-# ---------- End Screen ----------
-if st.session_state.ended:
-    st.markdown(f"""
-    <div class="game-over">
-        GAME OVER<br><br>
-        TITLE: {st.session_state.get("final_title","UNKNOWN")}<br>
-        SCORE: {st.session_state.get("final_score",0)}<br>
-    </div>
-    """, unsafe_allow_html=True)
-    st.subheader("📑 GPT-OSS Postmortem Report")
-    st.write(st.session_state.get("postmortem","No report generated."))
-    st.stop()
+# Title
+st.title("Clucktocracy — Pixel Coop Democracy")
 
-# ---------- Human Controls ----------
-st.subheader("Your Chicken (hen_human)")
-colA, colB = st.columns([1.2, 1])
-with colA:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    act = st.selectbox("Action", ["IDLE","PECK","ALLY","GOSSIP","AUDIT","PROPOSE","VOTE","SANCTION","FORAGE","SCRATCH"])
-    target = st.text_input("Target (e.g., hen_2)")
-    msg = st.text_area("Message / Rumor / Policy")
-    st.markdown('</div>', unsafe_allow_html=True)
-with colB:
-    st.metric("Reputation", random.randint(40,95))
-    st.metric("Stability", random.choice(["+","–","~"]))
-    st.metric("Trust Coins", random.randint(1,10))
+# ----------------------------
+# Initialize Coop
+# ----------------------------
+if "engine" not in st.session_state:
+    agents = [
+        ChickenAgent("hen_1", "aggressive", "fighter"),
+        ChickenAgent("hen_2", "scheming", "gossip"),
+        ChickenAgent("hen_3", "submissive", "follower"),
+        ChickenAgent("hen_4", "zen", "neutral"),
+    ]
+    engine = CoopEngine(agents)
+    st.session_state.engine = engine
+    st.session_state.tick = 0
+    st.session_state.rumors = []
+    st.session_state.human_actions = []
 
-human_override = {"action":act,"target":target.strip() or None,"message":msg.strip()}
+engine: CoopEngine = st.session_state.engine
 
-if st.button("Next Tick", type="primary", use_container_width=True):
-    engine.step(
-        backend=backend,
-        human_override=human_override,
-        constitution=st.session_state.constitution,
-        reasoning_effort=reasoning_effort,
-        api_base=api_base,
-        api_key=api_key,
-    )
-    engine.save_state()
-    st.session_state.tick = engine.tick
-    st.rerun()
-
-# ---------- Data ----------
-rows = load_log_rows()
-mems = load_mem()
-
-# ---------- Rumor Feed ----------
-st.subheader("Rumor Feed")
-if rows:
-    for r in rows[-40:]:
-        st.markdown(f"- [t={r['tick']}] {r['agent']} → {r['action']} :: {r['message']}")
-else:
-    st.info("Click Next Tick to start the coop.")
-
-# ---------- Coop Map ----------
-st.subheader("Coop Map")
-render_pixel_map(rows, engine.agents)
-
-# ---------- Metrics ----------
-st.subheader("Coop Metrics")
-col1, col2, col3 = st.columns(3)
-col1.metric("Total Actions", len(rows))
-col2.metric("Rumors", sum(1 for r in rows if r["action"] in ("GOSSIP","spread_rumor")))
-col3.metric("Sanctions", sum(1 for r in rows if r["action"]=="SANCTION"))
-
-# ---------- Memories ----------
-st.subheader("Memories")
-for a,m in mems.items():
-    st.markdown(f"**{a}**")
-    for ev in m[-3:]:
-        st.caption(f"- {ev.get('event','')}")
-
-# ---------- End Button ----------
-if st.button("End Session", use_container_width=True):
+# ----------------------------
+# Sidebar
+# ----------------------------
+st.sidebar.header("Controls")
+backend = st.sidebar.selectbox("Model backend", ["mock", "ollama", "transformers"])
+st.sidebar.markdown(f"**Backend selected:** {backend}")
+if st.sidebar.button("End Session"):
     st.session_state.ended = True
-    score = len(rows)
-    st.session_state.final_score = score
-    st.session_state.final_title = "DEMOCRACY DEFENDER" if score>20 else "GOSSIP LORD"
 
-    scenario = next((s for s in SCENARIOS if s["name"]==scenario_name), None)
-    if scenario:
-        if scenario["win"](rows): st.session_state.final_title="VICTORY!"
-        elif scenario["lose"](rows): st.session_state.final_title="DEFEAT!"
+# ----------------------------
+# Pixel Map Renderer
+# ----------------------------
+def render_pixel_map(agents):
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 10)
 
-    if backend!="mock":
-        summary = f"Analyze this coop simulation with {len(rows)} actions, constitution {st.session_state.constitution}."
-        report = run_inference(summary, backend=backend, model=model, api_base=api_base, api_key=api_key)
-        st.session_state.postmortem = report.get("message","No report")
+    colors = ["#FF4B4B", "#4B7BFF", "#3CB043", "#FFD700", "#FF69B4"]
+    positions = {}
+
+    for i, a in enumerate(agents):
+        x, y = (i % 5) * 2 + 1, (i // 5) * 2 + 1
+        positions[a.name] = (x, y)
+        ax.scatter(x, y, c=colors[i % len(colors)], s=800, marker="o", edgecolors="white", linewidths=1.5)
+        ax.text(x, y + 0.5, a.name, ha="center", color="white", fontsize=8, fontweight="bold")
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_facecolor("#1E1E1E")
+    st.pyplot(fig)
+
+# ----------------------------
+# Player (Human Chicken)
+# ----------------------------
+st.subheader("Your Chicken (hen_human)")
+col1, col2, col3 = st.columns(3)
+with col1:
+    action = st.selectbox("Choose action", ["IDLE", "PECK", "RUMOR", "ALLY", "PROPOSE", "VOTE", "SANCTION"])
+with col2:
+    target = st.text_input("Target (e.g., hen_2)")
+with col3:
+    message = st.text_input("Message / Rumor / Policy text")
+
+if st.button("➡️ Next Tick"):
+    st.session_state.human_actions.append({
+        "tick": st.session_state.tick,
+        "agent": "hen_human",
+        "action": action,
+        "target": target,
+        "message": message
+    })
+    rows = engine.step()
+    st.session_state.rumors.extend(rows)
+    st.session_state.tick += 1
+
+# ----------------------------
+# Layout
+# ----------------------------
+left, right = st.columns([2, 1])
+with left:
+    st.subheader("Rumor Feed & Actions")
+    if not st.session_state.rumors:
+        st.info("Click **Next Tick** to start the coop.")
     else:
-        st.session_state.postmortem = "Mock: coalitions collapsed, rumors dominated, governance fragile."
-    st.rerun()
+        for row in st.session_state.rumors[-10:]:
+            st.markdown(
+                f"""
+                <div class="rumor-feed">
+                [Tick {row['tick']}] <b>{row['agent']}</b> → {row['action']} ({row['outcome']})<br>
+                {row.get('message','')}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+with right:
+    st.subheader("Coop Map")
+    render_pixel_map(engine.agents)
+
+# ----------------------------
+# Memories
+# ----------------------------
+st.subheader("Memories")
+for agent in engine.agents:
+    st.markdown(f"<h4>{agent.name}</h4>", unsafe_allow_html=True)
+    if agent.memory:
+        for m in agent.memory[-3:]:
+            st.markdown(f"<div class='memory-block'>{m}</div>", unsafe_allow_html=True)
+    else:
+        st.markdown("<div class='memory-block'>(no memories yet)</div>", unsafe_allow_html=True)
+
+# ----------------------------
+# Metrics
+# ----------------------------
+st.subheader("Coop Metrics")
+metrics = engine.compute_metrics()
+for k, v in metrics.items():
+    st.markdown(f"<div class='metric-box'><b>{k}</b>: {v}</div>", unsafe_allow_html=True)
