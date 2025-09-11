@@ -8,6 +8,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
+# Paths
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 LOG_PATH = os.path.join(DATA_DIR, "log.csv")
 MEMORY_PATH = os.path.join(DATA_DIR, "memory_snapshots.json")
@@ -59,11 +60,27 @@ def compute_metrics(log_rows):
     total = len(log_rows) or 1
     return {
         "Hierarchy steepness (pecks)": metrics.get("initiate_fight", 0) / total,
-        "Policy inertia (proposals vs votes)": metrics.get("propose", 0) - metrics.get("vote", 0),
+        "Policy inertia (proposals - votes)": metrics.get("propose", 0) - metrics.get("vote", 0),
         "Coalition signals (alliances)": metrics.get("ally", 0),
         "Rumor activity": metrics.get("spread_rumor", 0),
         "Sanctions applied": metrics.get("sanction", 0),
     }
+
+
+def bootstrap_mock_data():
+    """If no logs exist, auto-run a tiny mock simulation so the UI has data."""
+    if not os.path.exists(LOG_PATH):
+        from chickens.agent import ChickenAgent
+        from simulation.engine import CoopEngine
+
+        os.makedirs(DATA_DIR, exist_ok=True)
+        agents = [
+            ChickenAgent("hen_1", "aggressive", "leader"),
+            ChickenAgent("hen_2", "scheming", "follower"),
+            ChickenAgent("hen_3", "submissive", "gossip"),
+        ]
+        coop = CoopEngine(agents, max_ticks=5, log_interval=2)
+        coop.run(backend="mock", verbose=False)
 
 
 # -----------------------------
@@ -72,10 +89,13 @@ def compute_metrics(log_rows):
 st.set_page_config(page_title="Clucktocracy", layout="wide")
 st.title("🐔 Clucktocracy: The Chicken Coop Simulation")
 
+# Ensure we have some data on first load
+bootstrap_mock_data()
+
 # Sidebar
 st.sidebar.header("Controls")
 if st.sidebar.button("Refresh data"):
-    st.experimental_rerun()
+    st.rerun()  # ✅ fixed: replaces deprecated experimental_rerun()
 
 # Load data
 log_rows = load_log()
@@ -124,4 +144,3 @@ st.subheader("Coop Metrics")
 metrics = compute_metrics(log_rows)
 for k, v in metrics.items():
     st.metric(label=k, value=v)
-
