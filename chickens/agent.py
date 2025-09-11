@@ -1,91 +1,121 @@
 # chickens/agent.py
+"""
+ChickenAgent definition for Clucktocracy.
+Agents can be human-controlled (hen_human) or AI-controlled (GPT-OSS, Ollama, Transformers).
+"""
 
 import random
-import uuid
-from typing import Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 
-# Import your LLM backend wrapper (we’ll make sure gpt/inference.py defines generate_action)
-try:
-    from gpt.inference import generate_action
-except ImportError:
-    generate_action = None
+# Import the inference wrapper
+from gpt.inference import generate_action_for_agent
 
 
 class ChickenAgent:
-    def __init__(self, name: str, personality: str, role: str, use_llm: bool = False):
-        self.id = str(uuid.uuid4())[:8]
-        self.name = name
-        self.personality = personality  # e.g. "aggressive", "submissive", "scheming"
-        self.role = role                # e.g. "leader", "follower", "gossip"
-        self.peck_rank = random.randint(1, 10)  # lower is stronger
-        self.mood = "neutral"
-        self.use_llm = use_llm
+    def __init__(self, name: str, personality: str, role: str):
+        """
+        Args:
+            name: agent id string (e.g., "hen_2")
+            personality: one of {"aggressive","submissive","scheming","curious","zen",...}
+            role: freeform role label (e.g., "leader","follower","gossip","reformer")
+        """
+        self.name: str = name
+        self.personality: str = personality
+        self.role: str = role
+        self.peck_rank: int = random.randint(1, 10)  # lower = stronger in fights
+        self.memory: List[Dict[str, Any]] = []
+        self.mood: str = "neutral"
 
-        # Event memory (each entry is a dict)
-        self.memory: list[Dict[str, Any]] = []
-
-        # Stable personality traits for richer emergent behavior
-        self.traits = {
-            "dominance": random.uniform(0, 1),
-            "agreeableness": random.uniform(0, 1),
-            "risk": random.uniform(0, 1),
-        }
-
-    # -----------------------------
-    # Memory
-    # -----------------------------
-    def observe(self, event: str, source: Optional[str] = None, credibility: float = 1.0, tick: int = 0):
-        """Chicken observes something and stores it with metadata."""
-        entry = {
-            "event": event,
-            "source": source,
-            "credibility": credibility,
-            "tick": tick,
-        }
-        self.memory.append(entry)
-        if len(self.memory) > 50:
+    # ---------------------------
+    # Core behaviors
+    # ---------------------------
+    def observe(self, event: Any) -> None:
+        """
+        Store a memory event (string or dict).
+        Keeps memory bounded to ~24 entries.
+        """
+        if isinstance(event, str):
+            event = {"event": event}
+        event.setdefault("tick", None)
+        self.memory.append(event)
+        if len(self.memory) > 24:
             self.memory.pop(0)
 
-    # -----------------------------
-    # Decision-making
-    # -----------------------------
-    def decide_action(self, context: Optional[dict] = None) -> Dict[str, Any]:
+    def decide_action(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Decide what to do this tick.
-        Returns a structured dict {action, target, message, ...}.
+        - If backend == "mock": use heuristic/random behavior.
+        - Otherwise: call inference.generate_action_for_agent().
+        Returns an action dict:
+            { "action": str, "target": Optional[str], "message": str, "confidence": float }
         """
-        if self.use_llm and generate_action is not None:
-            try:
-                return generate_action(self, context or {})
-            except Exception as e:
-                # Fail gracefully to heuristics if LLM call fails
-                return {"action": "idle", "message": f"(LLM error: {e})"}
+        backend = context.get("backend", "mock")
+        model = context.get("model", "openai/gpt-oss-20b")
+        reasoning_effort = context.get("reasoning_effort", "medium")
+        api_base = context.get("api_base", "http://localhost:8000/v1")
+        api_key = context.get("api_key", "test")
 
-        # Heuristic / mock fallback
-        if self.personality == "aggressive":
-            return {"action": "initiate_fight", "target": None, "message": f"{self.name} picks a fight!"}
-        elif self.personality == "scheming":
-            target = f"hen_{random.randint(1,5)}"
-            rumor = f"I saw {target} stealing seeds!"
-            return {"action": "spread_rumor", "target": target, "message": rumor}
-        else:
-            return {"action": random.choice(["wander", "scratch", "idle"]), "target": None, "message": ""}
+        if backend == "mock":
+            # Toy personality-driven rule
+            if self.personality == "aggressive":
+                action = "PECK"
+                msg = "dominance strike"
+            elif self.personality == "scheming":
+                action = "GOSSIP"
+                msg = "plotting behind feathers"
+            elif self.personality == "submissive":
+                action = "ALLY"
+                msg = "seeks protection"
+            else:
+                action = random.choice(["FORAGE","SCRATCH","IDLE"])
+                msg = "wanders around"
 
-    # -----------------------------
-    # Gossip / Rumors
-    # -----------------------------
-    def react_to_rumor(self, rumor: str, source: Optional[str] = None, tick: int = 0):
-        """Update memory/mood based on gossip."""
-        self.observe(f"Rumor heard: {rumor}", source=source, credibility=0.5, tick=tick)
-        if "you" in rumor and self.personality != "zen":
+            result = {
+                "action": action,
+                "target": None,
+                "message": msg,
+                "confidence": round(random.uniform(0.5, 0.9), 2),
+            }
+            self.observe(f"{self.name} mock-act: {result['action']}")
+            return result
+
+        # Otherwise, call GPT-OSS inference
+        action = generate_action_for_agent(
+            agent_name=self.name,
+            personality=self.personality,
+            role=self.role,
+            context=context,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            api_key=api_key,
+        )
+        # Record trace
+        self.observe({"event": f"{self.name} -> {action.get('action')} ({action.get('message','')[:40]})"})
+        return action
+
+    def react_to_rumor(self, rumor: str, source: Optional[str] = None, tick: Optional[int] = None) -> None:
+        """
+        React to a rumor (basic mood update + memory).
+        Supports both simple signature (rumor) and rich signature (rumor, source, tick).
+        """
+        event = f"Rumor heard: {rumor}"
+        if source:
+            event += f" (from {source})"
+        if tick is not None:
+            event += f" [t={tick}]"
+
+        self.memory.append({"event": event, "tick": tick})
+        if len(self.memory) > 24:
+            self.memory.pop(0)
+
+        # Mood reaction: non-zen chickens get offended if targeted
+        if self.personality != "zen" and self.name in rumor:
             self.mood = "offended"
 
-    # -----------------------------
+    # ---------------------------
     # Representation
-    # -----------------------------
-    def __repr__(self):
-        return (
-            f"{self.name} (Role={self.role}, "
-            f"Personality={self.personality}, "
-            f"Rank={self.peck_rank}, Mood={self.mood})"
-        )
+    # ---------------------------
+    def __repr__(self) -> str:
+        return f"{self.name} ({self.personality}, {self.role}, Rank {self.peck_rank})"
