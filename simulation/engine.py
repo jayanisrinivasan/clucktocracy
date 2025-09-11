@@ -1,113 +1,139 @@
 # simulation/engine.py
+"""
+CoopEngine — simulation driver for Clucktocracy.
+Manages agents, tick loop, history, metrics, and calls GPT inference backends.
+"""
 
-import os, csv, json
-from datetime import datetime
+import os
+import csv
+import json
+from typing import List, Dict, Any
+
 from chickens.agent import ChickenAgent
+from gpt.inference import generate_ai_actions
 
-LOG_PATH = os.path.join("logs", "coop_log.csv")
-MEM_PATH = os.path.join("logs", "coop_mem.json")
+# Paths for logging + memories
+LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "coop_log.csv")
+MEM_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "memories.json")
 
 
 class CoopEngine:
-    def __init__(self, agents, max_ticks=200, log_interval=5):
+    def __init__(self, agents: List[ChickenAgent], max_ticks: int = 200, log_interval: int = 5):
         self.agents = agents
-        self.history = []
+        self.history: List[Dict[str, Any]] = []
+        self.metrics_history: List[Dict[str, Any]] = []
         self.tick = 0
         self.max_ticks = max_ticks
         self.log_interval = log_interval
 
-        os.makedirs("logs", exist_ok=True)
+        # Reset files
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
         with open(LOG_PATH, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["tick", "agent", "action", "target", "message"])
+            writer = csv.DictWriter(f, fieldnames=["tick", "agent", "action", "target", "message", "outcome"])
             writer.writeheader()
+
         with open(MEM_PATH, "w", encoding="utf-8") as f:
             json.dump({}, f)
 
-    def step(self, backend="mock", human_override=None, constitution=None,
-             reasoning_effort="medium", api_base=None, api_key=None):
+    # ------------------------------------------------------------------
+    def step(
+        self,
+        actions: List[Dict[str, Any]] = None,
+        backend: str = "mock",
+        model: str = "openai/gpt-oss-20b",
+        reasoning_effort: str = "medium",
+        api_base: str = None,
+        api_key: str = None,
+        tick: int = 0,
+        constitution: dict = None,
+        human_override: dict = None,
+    ) -> List[Dict[str, Any]]:
         """
         Advance one tick of the coop simulation.
-        Integrates GPT-OSS / Ollama / Transformers / Remote API backends.
+        - actions: optional list of human or scripted actions
+        - backend/model/reasoning/api_base/api_key: inference config
+        - human_override: dict with one manual action
         """
-        actions = []
+        if actions is None:
+            actions = []
 
-        # Human override
+        # Add explicit human action override
         if human_override and human_override.get("action") != "IDLE":
             actions.append({
-                "tick": self.tick,
+                "tick": tick,
                 "agent": "hen_human",
-                "action": human_override.get("action"),
+                "action": human_override.get("action", "IDLE"),
                 "target": human_override.get("target"),
-                "message": human_override.get("message", "")
+                "message": human_override.get("message", ""),
+                "outcome": "submitted",
             })
 
-        # NPC actions
-        for agent in self.agents:
-            if agent.role != "player":
-                act = agent.act(self.tick)
-                act["tick"] = self.tick
-                actions.append(act)
+        # Call GPT inference to get AI moves
+        ai_actions = generate_ai_actions(
+            self.agents,
+            tick=tick,
+            backend=backend,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            api_base=api_base,
+            api_key=api_key,
+        )
 
-        # GPT inference (if not mock)
-        if backend != "mock":
-            try:
-                from gpt.inference import generate_ai_actions
-                ai_responses = generate_ai_actions(
-                    actions,
-                    backend=backend,
-                    model="openai/gpt-oss-20b",  # default
-                    reasoning_effort=reasoning_effort,
-                    api_base=api_base,
-                    api_key=api_key
-                )
-                if ai_responses:
-                    actions.extend(ai_responses)
-            except Exception as e:
-                print(f"[WARN] GPT backend failed: {e}")
+        # Merge human + AI
+        all_actions = actions + ai_actions
 
-        # Save to history
-        self.history.extend(actions)
-        self.tick += 1
-        self._write_logs(actions)
-        self._update_memories(actions)
+        # Save into history
+        self.history.extend(all_actions)
+        self.tick = tick
 
-        return actions
+        # Append metrics snapshot
+        metrics = self.compute_metrics()
+        metrics["tick"] = tick
+        self.metrics_history.append(metrics)
 
-    def _write_logs(self, actions):
-        """Persist actions to CSV log"""
+        # Write to log CSV
         with open(LOG_PATH, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["tick", "agent", "action", "target", "message"])
-            for act in actions:
-                writer.writerow(act)
+            writer = csv.DictWriter(f, fieldnames=["tick", "agent", "action", "target", "message", "outcome"])
+            for row in all_actions:
+                writer.writerow(row)
 
-    def _update_memories(self, actions):
-        """Append memories per agent"""
-        mems = {}
-        if os.path.exists(MEM_PATH):
-            with open(MEM_PATH, encoding="utf-8") as f:
-                try:
-                    mems = json.load(f)
-                except json.JSONDecodeError:
-                    mems = {}
-
-        for act in actions:
-            agent = act["agent"]
-            if agent not in mems:
-                mems[agent] = []
-            mems[agent].append({
+        # Update memories
+        mems = self._load_memories()
+        for act in all_actions:
+            mems.setdefault(act["agent"], []).append({
                 "tick": act["tick"],
-                "event": f"{agent} did {act['action']} targeting {act.get('target','')} :: {act.get('message','')}"
+                "event": f"{act['agent']} did {act['action']} → {act.get('message','')}"
             })
-
         with open(MEM_PATH, "w", encoding="utf-8") as f:
             json.dump(mems, f, indent=2)
 
-    def save_state(self):
-        """Save engine state for persistence"""
-        state = {
-            "tick": self.tick,
-            "history": self.history,
-            "agents": [a.to_dict() for a in self.agents],
+        return all_actions
+
+    # ------------------------------------------------------------------
+    def compute_metrics(self) -> Dict[str, Any]:
+        """Compute coop-level indicators."""
+        pecks = sum(1 for h in self.history if h["action"].lower() in ("peck", "initiate_fight"))
+        rumors = sum(1 for h in self.history if h["action"].lower() in ("gossip", "spread_rumor"))
+        sanctions = sum(1 for h in self.history if h["action"].lower() == "sanction")
+        props = sum(1 for h in self.history if h["action"].lower() == "propose")
+        votes = sum(1 for h in self.history if h["action"].lower() == "vote")
+        allies = sum(1 for h in self.history if h["action"].lower() == "ally")
+
+        return {
+            "hierarchy_steepness": round(pecks / max(1, len(self.history)), 3),
+            "policy_inertia": props - votes,
+            "coalitions": allies,
+            "rumors": rumors,
+            "sanctions": sanctions,
         }
-        with open("logs/state.json", "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+
+    # ------------------------------------------------------------------
+    def save_state(self):
+        """Optionally persist engine state (stub)."""
+        pass
+
+    def _load_memories(self) -> Dict[str, Any]:
+        if not os.path.exists(MEM_PATH):
+            return {}
+        with open(MEM_PATH, encoding="utf-8") as f:
+            return json.load(f)
