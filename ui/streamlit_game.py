@@ -1,25 +1,18 @@
 # ui/streamlit_game.py
-"""
-CLUCKTOCRACY — Coop Simulation HUD
-Dark gamer HUD with scenarios, GPT-OSS integration, and backend flexibility.
-"""
-
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-import csv, json, random
+import sys, os, csv, json, random
 from collections import defaultdict
-
 import streamlit as st
-import matplotlib.pyplot as plt
-import networkx as nx
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from chickens.agent import ChickenAgent
 from chickens.scenarios import SCENARIOS
 from chickens.personalities import CHICKEN_ARCHETYPES
 from simulation.engine import CoopEngine, LOG_PATH, MEM_PATH
+from ui.pixel_map import render_pixel_map
+from gpt.inference import run_inference
 
-# ---------- Style ----------
+# ---------- Page & Theme ----------
 st.set_page_config(page_title="Clucktocracy", layout="wide")
 
 st.markdown("""
@@ -47,8 +40,8 @@ h1, h2, h3 { color: #ff005d; }
 
 .game-over {
     background-color: #000000cc; color: #ff005d; text-align: center;
-    padding: 60px; border: 4px solid #00ffae; border-radius: 12px;
-    font-size: 28px; font-weight: bold; text-shadow: 0 0 10px #ff005d, 0 0 20px #ff005d;
+    padding: 40px; border: 4px solid #00ffae; border-radius: 12px;
+    font-size: 26px; font-weight: bold; text-shadow: 0 0 10px #ff005d, 0 0 20px #ff005d;
 }
 
 .banner {
@@ -72,65 +65,27 @@ def load_mem():
     with open(MEM_PATH, encoding="utf-8") as f:
         return json.load(f)
 
-def compute_power_gini(rows):
-    """Toy proxy: outbound 'PECK' count per agent -> Gini coefficient."""
-    counts = defaultdict(int)
-    for r in rows:
-        if r["action"] in ("PECK","initiate_fight"):
-            counts[r["agent"]] += 1
-    if not counts:
-        return 0.0
-    vals = sorted(counts.values())
-    n = len(vals)
-    cum = 0
-    for i, v in enumerate(vals, 1):
-        cum += i * v
-    total = sum(vals)
-    gini = (2*cum)/(n*total) - (n+1)/n
-    return max(0.0, round(gini, 3))
-
 # ---------- Sidebar ----------
 st.sidebar.header("Scenario")
-scenario_name = st.sidebar.selectbox(
-    "Choose starting scenario",
-    [s["name"] for s in SCENARIOS] + ["Custom"]
-)
+scenario_name = st.sidebar.selectbox("Scenario", [s["name"] for s in SCENARIOS] + ["Custom"])
 
-st.sidebar.header("Controls")
-st.sidebar.selectbox(
-    "Model backend",
-    ["mock","ollama","transformers","remote-api"],
-    key="backend"
-)
+st.sidebar.header("Backend")
+backend = st.sidebar.selectbox("Model backend", ["mock","ollama","transformers","remote-api"], key="backend")
+model = st.sidebar.text_input("Model name", value="openai/gpt-oss-20b", key="model")
+reasoning_effort = st.sidebar.selectbox("Reasoning effort", ["low","medium","high"], key="reasoning_effort")
+api_base = st.sidebar.text_input("API base", value="http://localhost:8000/v1", key="api_base")
+api_key = st.sidebar.text_input("API key", value="test", type="password", key="api_key")
 
-if st.session_state.get("backend") == "transformers":
-    st.sidebar.text_input("HF model id", key="model", value="openai/gpt-oss-20b")
-
-if st.session_state.get("backend") == "ollama":
-    st.sidebar.text_input("Ollama tag", key="model", value="gpt-oss:20b")
-
-if st.session_state.get("backend") == "remote-api":
-    st.sidebar.text_input("Remote API base URL", key="api_base", value="http://localhost:8000/v1")
-    st.sidebar.text_input("Remote API key", key="api_key", value="test", type="password")
-    st.sidebar.text_input("Remote model name", key="model", value="gpt-oss-20b")
-
-st.sidebar.selectbox(
-    "Reasoning effort",
-    ["low","medium","high"],
-    key="reasoning_effort"
-)
-
-st.sidebar.markdown("### Constitution")
+st.sidebar.header("Constitution")
 c1 = st.sidebar.checkbox("Term limits", value=False)
 c2 = st.sidebar.checkbox("Rumor audits", value=True)
 c3 = st.sidebar.checkbox("Equal talk-time", value=False)
 
-# ---------- Session boot ----------
+# ---------- Session Init ----------
 if "engine" not in st.session_state:
     agents = [ChickenAgent("hen_human", "curious", "reformer")]
-
     if scenario_name != "Custom":
-        scenario = next(s for s in SCENARIOS if s["name"] == scenario_name)
+        scenario = next(s for s in SCENARIOS if s["name"]==scenario_name)
         for arche in scenario["chickens"]:
             agents.append(ChickenAgent(**arche))
         st.session_state.constitution = dict(scenario["constitution"])
@@ -138,70 +93,57 @@ if "engine" not in st.session_state:
         chosen = random.sample(CHICKEN_ARCHETYPES, 3)
         for arche in chosen:
             agents.append(ChickenAgent(**arche))
-        st.session_state.constitution = {
-            "term_limits": c1,
-            "rumor_audits": c2,
-            "equal_talk_time": c3,
-        }
-
+        st.session_state.constitution = {"term_limits": c1,"rumor_audits": c2,"equal_talk_time": c3}
     st.session_state.engine = CoopEngine(agents, max_ticks=240, log_interval=4)
 
-# ✅ Safe defaults
-st.session_state.setdefault("backend", "mock")
-st.session_state.setdefault("model", "openai/gpt-oss-20b")
-st.session_state.setdefault("reasoning_effort", "medium")
-st.session_state.setdefault("api_base", "http://localhost:8000/v1")
-st.session_state.setdefault("api_key", "test")
-st.session_state.setdefault("tick", 0)
-st.session_state.setdefault("ended", False)
-
+st.session_state.setdefault("tick",0)
+st.session_state.setdefault("ended",False)
 engine: CoopEngine = st.session_state.engine
-st.session_state.constitution.update({"term_limits": c1, "rumor_audits": c2, "equal_talk_time": c3})
+st.session_state.constitution.update({"term_limits": c1,"rumor_audits": c2,"equal_talk_time": c3})
 
-# ---------- Backend banner ----------
+# ---------- HUD Banner ----------
 st.markdown(
-    f"<div class='banner'>Scenario: <b>{scenario_name}</b> | Backend: <b>{st.session_state.backend}</b> | Model: <b>{st.session_state.get('model','-')}</b> | Reasoning: <b>{st.session_state.reasoning_effort}</b></div>",
+    f"<div class='banner'>Scenario: <b>{scenario_name}</b> | Backend: <b>{backend}</b> | Model: <b>{model}</b> | Reasoning: <b>{reasoning_effort}</b></div>",
     unsafe_allow_html=True
 )
 
-# ---------- End screen ----------
+# ---------- End Screen ----------
 if st.session_state.ended:
     st.markdown(f"""
     <div class="game-over">
         GAME OVER<br><br>
         TITLE: {st.session_state.get("final_title","UNKNOWN")}<br>
-        SCORE: {st.session_state.get("final_score",0)}<br><br>
-        Reload page to start a new coop.
+        SCORE: {st.session_state.get("final_score",0)}<br>
     </div>
     """, unsafe_allow_html=True)
+    st.subheader("📑 GPT-OSS Postmortem Report")
+    st.write(st.session_state.get("postmortem","No report generated."))
     st.stop()
 
-# ---------- Human action ----------
+# ---------- Human Controls ----------
 st.subheader("Your Chicken (hen_human)")
 colA, colB = st.columns([1.2, 1])
 with colA:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    act = st.selectbox("Choose action", ["IDLE","PECK","ALLY","GOSSIP","AUDIT","PROPOSE","VOTE","SANCTION","FORAGE","SCRATCH"])
+    act = st.selectbox("Action", ["IDLE","PECK","ALLY","GOSSIP","AUDIT","PROPOSE","VOTE","SANCTION","FORAGE","SCRATCH"])
     target = st.text_input("Target (e.g., hen_2)")
-    msg = st.text_area("Message / Rumor / Policy text")
+    msg = st.text_area("Message / Rumor / Policy")
     st.markdown('</div>', unsafe_allow_html=True)
 with colB:
     st.metric("Reputation", random.randint(40,95))
-    st.metric("Stability Effect", random.choice(["+","–","~"]))
+    st.metric("Stability", random.choice(["+","–","~"]))
     st.metric("Trust Coins", random.randint(1,10))
 
-human_override = {"action": act, "target": target.strip() or None, "message": msg.strip()}
+human_override = {"action":act,"target":target.strip() or None,"message":msg.strip()}
 
-# ---------- Advance tick ----------
-go = st.button("Next Tick", use_container_width=True, type="primary")
-if go:
+if st.button("Next Tick", type="primary", use_container_width=True):
     engine.step(
-        backend=st.session_state.backend,
+        backend=backend,
         human_override=human_override,
         constitution=st.session_state.constitution,
-        reasoning_effort=st.session_state.reasoning_effort,
-        api_base=st.session_state.api_base,
-        api_key=st.session_state.api_key,
+        reasoning_effort=reasoning_effort,
+        api_base=api_base,
+        api_key=api_key,
     )
     engine.save_state()
     st.session_state.tick = engine.tick
@@ -213,81 +155,46 @@ mems = load_mem()
 
 # ---------- Rumor Feed ----------
 st.subheader("Rumor Feed")
-if not rows:
-    st.info("Click Next Tick to start the coop.")
+if rows:
+    for r in rows[-40:]:
+        st.markdown(f"- [t={r['tick']}] {r['agent']} → {r['action']} :: {r['message']}")
 else:
-    for r in rows[-60:]:
-        tag = f"[{st.session_state.backend.upper()}]"
-        label = "[ATTACK]" if r["action"] in ("PECK","initiate_fight") else \
-                "[RUMOR]" if r["action"] in ("GOSSIP","spread_rumor") else \
-                "[POLICY]" if r["action"] in ("PROPOSE","VOTE") else \
-                "[SANCTION]" if r["action"]=="SANCTION" else "[MOVE]"
-        st.markdown(f"- {tag} {label} [t={r['tick']}] {r['agent']} → {r['action']} :: {r['message']}")
+    st.info("Click Next Tick to start the coop.")
 
-# ---------- Coop Map + Metrics ----------
-st.subheader("Coop Map & Metrics")
-col1, col2 = st.columns([1.2, 1])
-with col1:
-    if rows:
-        G = nx.DiGraph()
-        for r in rows:
-            a, tgt, actn = r["agent"], r["target"], r["action"]
-            G.add_node(a)
-            if tgt:
-                G.add_node(tgt)
-                color = "green" if actn.lower()=="ally" else \
-                        "red" if actn.lower()=="sanction" else \
-                        "orange" if actn.lower() in ("gossip","spread_rumor") else "gray"
-                G.add_edge(a, tgt, color=color)
-        colors = [edata.get("color","gray") for *_ , edata in G.edges(data=True)]
-        fig, ax = plt.subplots(figsize=(6,4))
-        pos = nx.spring_layout(G, seed=7)
-        nx.draw_networkx(G, pos=pos,
-                         node_color=["#a8e6cf" if n!="hen_human" else "#ffd3b6" for n in G.nodes()],
-                         edge_color=colors, with_labels=True, ax=ax, font_color="black")
-        plt.axis("off")
-        st.pyplot(fig)
-    else:
-        st.info("Graph will appear after a few actions.")
-with col2:
-    st.markdown("#### Coop Metrics")
-    if rows:
-        total = len(rows)
-        pecks   = sum(1 for r in rows if r["action"] in ("PECK","initiate_fight"))
-        rumors  = sum(1 for r in rows if r["action"] in ("GOSSIP","spread_rumor"))
-        allies  = sum(1 for r in rows if r["action"]=="ALLY")
-        votes   = sum(1 for r in rows if r["action"]=="VOTE")
-        props   = sum(1 for r in rows if r["action"]=="PROPOSE")
-        sanc    = sum(1 for r in rows if r["action"]=="SANCTION")
-        power_gini = compute_power_gini(rows)
-        st.metric("Hierarchy (pecks/total)", f"{(pecks/total):.2f}")
-        st.metric("Policy Inertia (props - votes)", props - votes)
-        st.metric("Coalitions", allies)
-        st.metric("Rumor Activity", rumors)
-        st.metric("Sanctions", sanc)
-        st.metric("Power Gini", power_gini)
-    else:
-        st.caption("Metrics populate after a few ticks.")
+# ---------- Coop Map ----------
+st.subheader("Coop Map")
+render_pixel_map(rows, engine.agents)
+
+# ---------- Metrics ----------
+st.subheader("Coop Metrics")
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Actions", len(rows))
+col2.metric("Rumors", sum(1 for r in rows if r["action"] in ("GOSSIP","spread_rumor")))
+col3.metric("Sanctions", sum(1 for r in rows if r["action"]=="SANCTION"))
 
 # ---------- Memories ----------
 st.subheader("Memories")
-if mems:
-    for agent, mlist in mems.items():
-        st.markdown(f"**{agent}**")
-        for m in mlist[-3:]:
-            st.caption(f"- {m.get('event','')}")
-else:
-    st.caption("No memories yet.")
+for a,m in mems.items():
+    st.markdown(f"**{a}**")
+    for ev in m[-3:]:
+        st.caption(f"- {ev.get('event','')}")
 
-# ---------- End Session ----------
+# ---------- End Button ----------
 if st.button("End Session", use_container_width=True):
-    my_rows = [r for r in rows if r["agent"]=="hen_human"]
-    score = 0
-    score += sum(1 for r in my_rows if r["action"] in ("PROPOSE","VOTE")) * 2
-    score += sum(1 for r in my_rows if r["action"]=="ALLY")
-    score -= sum(1 for r in my_rows if r["action"] in ("GOSSIP","spread_rumor"))
-    title = "DEMOCRACY DEFENDER" if score>=5 else "GOSSIP LORD" if score<=-1 else "PRAGMATIC HEN"
-    st.session_state.final_score = score
-    st.session_state.final_title = title
     st.session_state.ended = True
+    score = len(rows)
+    st.session_state.final_score = score
+    st.session_state.final_title = "DEMOCRACY DEFENDER" if score>20 else "GOSSIP LORD"
+
+    scenario = next((s for s in SCENARIOS if s["name"]==scenario_name), None)
+    if scenario:
+        if scenario["win"](rows): st.session_state.final_title="VICTORY!"
+        elif scenario["lose"](rows): st.session_state.final_title="DEFEAT!"
+
+    if backend!="mock":
+        summary = f"Analyze this coop simulation with {len(rows)} actions, constitution {st.session_state.constitution}."
+        report = run_inference(summary, backend=backend, model=model, api_base=api_base, api_key=api_key)
+        st.session_state.postmortem = report.get("message","No report")
+    else:
+        st.session_state.postmortem = "Mock: coalitions collapsed, rumors dominated, governance fragile."
     st.rerun()
